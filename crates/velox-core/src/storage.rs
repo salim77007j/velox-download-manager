@@ -11,9 +11,13 @@ pub const PART_SUFFIX: &str = ".veloxpart";
 pub const META_SUFFIX: &str = ".velox.meta";
 
 /// A file opened for positioned (offset) writes. Shared between segment workers.
-/// `File` is `Send + Sync`; `write_all_at` needs `&self` only.
+/// Unix: lock-free `write_all_at` (positional pwrite semantics).
+/// Windows: mutex + seek (portable; positioned writes are disk-bound anyway).
 pub struct SparseFile {
+    #[cfg(unix)]
     file: File,
+    #[cfg(windows)]
+    file: parking_lot::Mutex<File>,
     pub path: PathBuf,
 }
 
@@ -33,6 +37,8 @@ impl SparseFile {
                 file.set_len(sz)?;
             }
         }
+        #[cfg(windows)]
+        let file = parking_lot::Mutex::new(file);
         Ok(Self { file, path })
     }
 
@@ -42,22 +48,50 @@ impl SparseFile {
 
     /// Write buf at absolute offset. Safe for concurrent use at distinct offsets.
     pub fn write_at(&self, offset: u64, buf: &[u8]) -> Result<usize> {
-        write_all_at_impl(&self.file, offset, buf)
+        #[cfg(unix)]
+        {
+            write_all_at_impl(&self.file, offset, buf)
+        }
+        #[cfg(windows)]
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut f = self.file.lock();
+            f.seek(SeekFrom::Start(offset))?;
+            f.write_all(buf)?;
+            Ok(buf.len())
+        }
     }
 
     pub fn len(&self) -> Result<u64> {
-        Ok(self.file.metadata()?.len())
+        #[cfg(unix)]
+        {
+            Ok(self.file.metadata()?.len())
+        }
+        #[cfg(windows)]
+        {
+            Ok(self.file.lock().metadata()?.len())
+        }
     }
 
     /// Flush OS buffers to disk (fsync). Called on finalize and optional checkpoints.
     pub fn sync(&self) -> Result<()> {
-        self.file.sync_all()?;
+        #[cfg(unix)]
+        {
+            self.file.sync_all()?;
+        }
+        #[cfg(windows)]
+        {
+            self.file.lock().sync_all()?;
+        }
         Ok(())
     }
 
     /// Finalize: truncate to exact logical size if larger (sparse tail), fsync, rename to final path.
     pub fn finalize(self, final_path: &Path, logical_size: Option<u64>, fsync: bool) -> Result<()> {
+        #[cfg(unix)]
         let file = self.file;
+        #[cfg(windows)]
+        let file = self.file.into_inner();
         if let Some(sz) = logical_size {
             let cur = file.metadata()?.len();
             if cur > sz {
@@ -100,27 +134,6 @@ fn write_all_at_impl(file: &File, mut offset: u64, mut buf: &[u8]) -> Result<usi
                 offset += n as u64;
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e.into()),
-        }
-    }
-    Ok(total)
-}
-
-#[cfg(windows)]
-fn write_all_at_impl(file: &File, mut offset: u64, mut buf: &[u8]) -> Result<usize> {
-    use std::os::windows::fs::FileExt;
-    let total = buf.len();
-    while !buf.is_empty() {
-        match file.write_at(buf, offset) {
-            Ok(0) => return Err(VeloxError::Io(std::io::Error::new(
-                std::io::ErrorKind::WriteZero,
-                "write_at returned 0",
-            ))),
-            Ok(n) => {
-                buf = &buf[n..];
-                offset += n as u64;
-            }
-            Err(e) if e.raw_os_error() == Some(6) => continue, // handle invalid handle race
             Err(e) => return Err(e.into()),
         }
     }
