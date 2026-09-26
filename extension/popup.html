@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>
+  body { font-family: system-ui, sans-serif; width: 280px; margin: 0; background: #fafbfc; }
+  header { background: #0E9F9E; color: #fff; padding: 10px 14px; font-weight: 700; font-size: 15px; }
+  main { padding: 12px 14px; }
+  input { width: 100%; box-sizing: border-box; margin: 4px 0 10px; padding: 6px; border: 1px solid #d0d7de; border-radius: 6px; }
+  button { background: #0E9F9E; border: 0; color: #fff; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+  #status { font-size: 12px; margin-top: 8px; min-height: 16px; color: #555; }
+</style></head>
+<body>
+  <header>⚡ Velox</header>
+  <main>
+    <label>Download URL</label>
+    <input id="url" placeholder="https://…">
+    <button id="go">Download with Velox</button>
+    <div id="status"></div>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

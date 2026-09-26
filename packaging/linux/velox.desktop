@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Velox
+GenericName=Download Manager
+Comment=Every byte, at full speed — memory-safe hybrid download engine
+Exec=velox-gui
+Icon=velox
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=download;velox;http;torrent;accelerator;
+StartupNotify=true
+MimeType=x-scheme-handler/http;x-scheme-handler/https;

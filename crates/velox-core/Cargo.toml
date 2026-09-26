@@ -1,0 +1,43 @@
+[package]
+name = "velox-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Velox hybrid download engine: multi-segment HTTP/HTTPS, mirror racing, adaptive I/O, crash-safe resume"
+
+[dependencies]
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+sysinfo.workspace = true
+sha2.workspace = true
+hex.workspace = true
+rand.workspace = true
+parking_lot.workspace = true
+bytes.workspace = true
+percent-encoding.workspace = true
+url.workspace = true
+directories.workspace = true
+fs2.workspace = true
+toml.workspace = true
+
+librqbit = { version = "8", optional = true }
+
+[features]
+default = []
+torrent = ["dep:librqbit"]
+http3 = ["reqwest/http3"]
+
+[dev-dependencies]
+axum = { version = "0.7", features = ["json", "tokio", "http1"] }
+tempfile = "3"

@@ -1,0 +1,7 @@
+/target
+**/*.rs.bk
+*.veloxpart
+*.veloxpart.meta
+dist/
+validation/gui-stdout.log
+.DS_Store

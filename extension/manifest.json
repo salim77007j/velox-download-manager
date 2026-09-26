@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Velox Download Manager",
+  "version": "1.0.0",
+  "description": "Capture downloads and send them to Velox — the memory-safe download engine.",
+  "permissions": ["contextMenus", "storage", "notifications"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "background": { "service_worker": "background.js" },
+  "options_page": "options.html",
+  "action": { "default_popup": "popup.html", "default_title": "Velox" },
+  "icons": { "128": "icon.png" }
+}

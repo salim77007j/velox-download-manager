@@ -1,0 +1,32 @@
+[package]
+name = "velox-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Velox CLI + local REST daemon"
+
+[[bin]]
+name = "velox"
+path = "src/main.rs"
+
+[dependencies]
+velox-core = { path = "../velox-core" }
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+axum.workspace = true
+rand.workspace = true
+hex.workspace = true
+sha2.workspace = true
+sysinfo.workspace = true
+url.workspace = true

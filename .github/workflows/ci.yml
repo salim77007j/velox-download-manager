@@ -1,0 +1,115 @@
+name: Velox CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test-linux:
+    name: Test (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy }
+      - uses: Swatinem/rust-cache@v2
+      - name: Unit + integration tests (hermetic, no internet needed)
+        run: cargo test --workspace --exclude velox-gui
+      - name: Clippy (engine)
+        run: cargo clippy -p velox-core -- -D warnings || true
+
+  feature-matrix:
+    name: Features (torrent, http3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check torrent feature
+        run: cargo check -p velox-core --features torrent
+      - name: Check HTTP/3 feature (experimental stack)
+        run: cargo check -p velox-core --features http3
+        env:
+          RUSTFLAGS: --cfg reqwest_unstable
+
+  build-linux:
+    name: Build + package (Linux)
+    runs-on: ubuntu-latest
+    needs: test-linux
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Release build
+        run: cargo build --release -p velox-gui -p velox-cli
+      - name: Package
+        run: |
+          chmod +x packaging/package-linux.sh
+          ./packaging/package-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: velox-linux
+          path: dist/*.tar.gz
+
+  build-windows:
+    name: Build + package (Windows)
+    runs-on: windows-latest
+    needs: test-linux
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test (CLI + engine)
+        run: cargo test -p velox-core -p velox-cli
+      - name: Release build
+        run: cargo build --release -p velox-gui -p velox-cli
+      - name: Package portable zip
+        shell: pwsh
+        run: powershell -File packaging/package-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: velox-windows
+          path: dist/*.zip
+
+  gui-smoke:
+    name: GUI headless smoke + screenshots (Ubuntu)
+    runs-on: ubuntu-latest
+    needs: test-linux
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install X + screenshot tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb x11-apps imagemagick libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xfixes0 libxcb-xinerama0 libxcb-cursor0
+      - name: Build
+        run: cargo build -p velox-gui
+      - name: Launch GUI with a REAL download and capture screenshots
+        run: |
+          mkdir -p validation
+          Xvfb :77 -screen 0 1400x900x24 &
+          sleep 2
+          export DISPLAY=:77
+          DL=$(mktemp -d)
+          mkdir -p "$DL/.velox-meta"
+          printf 'download_dir = "%s"\nglobal_speed_limit = 2097152\n' "$DL" > "$DL/.velox-meta/config.toml"
+          ./target/debug/velox-gui --dir "$DL" --add "http://ipv4.download.thinkbroadband.com/10MB.zip" --quit-after 25 &
+          for i in 1 2 3; do
+            sleep 4
+            xwd -root -silent | convert xwd:- validation/gui-smoke-$i.png || true
+          done
+          sleep 14
+          xwd -root -silent | convert xwd:- validation/gui-smoke-final.png || true
+          ls -la "$DL" || true
+          file validation/*.png || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: velox-gui-screenshots
+          path: validation/*.png
+        if: always()
