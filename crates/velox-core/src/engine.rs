@@ -564,6 +564,7 @@ pub(crate) fn start_supervisor(inner: &Arc<EngineInner>, id: DownloadId) {
     let deps = Arc::new(SupervisorDeps {
         client: inner.client.clone(),
         cfg: inner.cfg.clone(),
+        state_dir: inner.state_dir.clone(),
         global_limiter: inner.global_limiter.clone(),
         buffer_budget: inner.buffer_budget.clone(),
         global_speed: inner.global_speed.clone(),

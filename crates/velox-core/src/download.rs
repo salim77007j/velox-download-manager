@@ -13,6 +13,7 @@ use crate::types::{
     DownloadId, DownloadShared, DownloadSnapshot, DownloadState, DownloadStatus, SegmentState,
 };
 use parking_lot::Mutex;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -32,6 +33,7 @@ pub enum Ctrl {
 pub(crate) struct SupervisorDeps {
     pub client: reqwest::Client,
     pub cfg: Arc<parking_lot::RwLock<EngineConfig>>,
+    pub state_dir: PathBuf,
     pub global_limiter: Arc<crate::limiter::RateLimiter>,
     pub buffer_budget: Arc<crate::memory::BufferBudget>,
     #[allow(dead_code)]
@@ -349,6 +351,27 @@ async fn prepare_download(
             st.init_mirror_stats();
         }
         st.url = probe.final_url.as_str().to_string();
+    }
+
+    // Keep the index in sync with the (possibly renamed) part file — restore
+    // after a crash relies on this path.
+    {
+        let st = shared.state.read();
+        let _ = upsert_index(
+            &deps.state_dir,
+            IndexEntry {
+                id: shared.id,
+                part_path: part_path_for(&st).display().to_string(),
+                completed: false,
+                url: String::new(),
+                filename: String::new(),
+                dest_dir: String::new(),
+                total_size: None,
+                sha256: None,
+                created_at: None,
+                completed_at: None,
+            },
+        );
     }
 
     // Fresh vs resume decision

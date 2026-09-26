@@ -305,94 +305,6 @@ async fn full_download_multi_segment_integrity() {
 }
 
 #[tokio::test]
-async fn pause_resume_slow_download() {
-    let (addr, _ctx) = spawn_server().await;
-    let dir = tempfile::tempdir().unwrap();
-    let engine = Engine::new(test_cfg(dir.path())).unwrap();
-
-    let size = 6 * 1024 * 1024;
-    let id = engine
-        .add(&format!("http://{addr}/slow/{size}/2048"), DownloadOptions::default()) // ~2MB/s
-        .unwrap();
-
-    // wait for some progress
-    let start = std::time::Instant::now();
-    loop {
-        let s = engine.snapshot(id).unwrap();
-        if s.bytes_done > 512 * 1024 || s.status == DownloadStatus::Completed {
-            break;
-        }
-        assert!(start.elapsed() < std::time::Duration::from_secs(30));
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    engine.pause(id).unwrap();
-    let paused = wait_status(&engine, id, DownloadStatus::Paused, std::time::Duration::from_secs(15)).await;
-    assert!(paused.bytes_done > 0, "must have bytes on disk before pause");
-
-    engine.resume(id).unwrap();
-    let snap = wait_status(&engine, id, DownloadStatus::Completed, std::time::Duration::from_secs(120)).await;
-    let data = std::fs::read(snap.full_path).unwrap();
-    assert_eq!(sha256_hex(&data), sha256_hex(&gen_vec(size as u64)));
-}
-
-#[test]
-fn crash_recovery_resumes_from_sidecar() {
-    // dedicated server runtime that outlives both "processes"
-    let server_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-    let addr = server_rt.block_on(async { spawn_server().await.0 });
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = test_cfg(dir.path());
-
-    let size = 8 * 1024 * 1024;
-    let url = format!("http://{addr}/slow/{size}/4096"); // ~4MB/s
-
-    // "process 1": start download, make progress, then hard-kill the runtime
-    let id;
-    {
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let engine = rt.block_on(async { Engine::new(cfg.clone()).unwrap() });
-        id = rt.block_on(async {
-            let id = engine.add(&url, DownloadOptions::default()).unwrap();
-            let start = std::time::Instant::now();
-            loop {
-                let s = engine.snapshot(id).unwrap();
-                if s.bytes_done > 1024 * 1024 {
-                    break;
-                }
-                assert!(start.elapsed() < std::time::Duration::from_secs(30));
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-            id
-        });
-        // hard drop = simulated power loss
-    }
-
-    // "process 2": new engine, same state dir → auto-resume must finish the job
-    {
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let engine = rt.block_on(async { Engine::new(cfg).unwrap() });
-        let snap = rt.block_on(async {
-            let waited = std::time::Instant::now();
-            loop {
-                let s = engine.snapshot(id).unwrap();
-                if matches!(
-                    s.status,
-                    DownloadStatus::Completed | DownloadStatus::Downloading | DownloadStatus::Connecting
-                ) {
-                    break;
-                }
-                assert!(waited.elapsed() < std::time::Duration::from_secs(15));
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-            wait_status(&engine, id, DownloadStatus::Completed, std::time::Duration::from_secs(150)).await
-        });
-        let data = std::fs::read(snap.full_path).unwrap();
-        assert_eq!(data.len() as u64, size);
-        assert_eq!(sha256_hex(&data), sha256_hex(&gen_vec(size as u64)));
-    }
-}
-
-#[tokio::test]
 async fn flaky_server_retries_and_completes() {
     let (addr, _ctx) = spawn_server().await;
     let dir = tempfile::tempdir().unwrap();
@@ -416,30 +328,118 @@ async fn speed_limit_is_respected() {
 
     let size = 2 * 1024 * 1024;
     let mut opts = DownloadOptions::default();
-    opts.speed_limit = Some(512 * 1024); // 0.5 MB/s → ≥ ~3.5s for 2MB (burst 256K)
+    opts.speed_limit = Some(512 * 1024); // 0.5 MB/s -> >= ~3.5 s for 2 MB (burst 256 K)
     let id = engine
         .add(&format!("http://{addr}/file/{size}"), opts)
         .unwrap();
     let start = std::time::Instant::now();
-    let mut last = 0u64;
-    loop {
-        let s = engine.snapshot(id).unwrap();
-        if s.status == DownloadStatus::Completed { break; }
-        if s.status == DownloadStatus::Failed { panic!("failed: {:?}", s.error); }
-        if s.bytes_done != last {
-            eprintln!("[{}] bytes={} speed={:.0}", start.elapsed().as_secs_f64(), s.bytes_done, s.speed_bps);
-            last = s.bytes_done;
-        }
-        assert!(start.elapsed() < std::time::Duration::from_secs(60), "timeout at {} bytes", s.bytes_done);
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
+    let snap = wait_status(&engine, id, DownloadStatus::Completed, std::time::Duration::from_secs(60)).await;
     let elapsed = start.elapsed().as_secs_f64();
     assert!(elapsed >= 2.5, "limit must slow the transfer, elapsed={elapsed:.2}s");
-    let snap = engine.snapshot(id).unwrap();
     let data = std::fs::read(snap.full_path).unwrap();
     assert_eq!(sha256_hex(&data), sha256_hex(&gen_vec(size as u64)));
 }
 
+#[tokio::test]
+async fn pause_resume_slow_download() {
+    let (addr, _ctx) = spawn_server().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::new(test_cfg(dir.path())).unwrap();
+
+    let size = 8 * 1024 * 1024;
+    let mut opts = DownloadOptions::default();
+    opts.connections = Some(1); // deterministic single stream at ~0.5 MB/s
+    let id = engine
+        .add(&format!("http://{addr}/slow/{size}/512"), opts) // ~0.5 MB/s
+        .unwrap();
+
+    // wait for some progress (single stream => no race with completion)
+    let start = std::time::Instant::now();
+    loop {
+        let s = engine.snapshot(id).unwrap();
+        if s.bytes_done > 512 * 1024 {
+            break;
+        }
+        assert!(s.status != DownloadStatus::Completed, "completed too early to test pause");
+        assert!(start.elapsed() < std::time::Duration::from_secs(30));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    engine.pause(id).unwrap();
+    let paused = wait_status(&engine, id, DownloadStatus::Paused, std::time::Duration::from_secs(15)).await;
+    assert!(paused.bytes_done > 0, "must have bytes on disk before pause");
+
+    engine.resume(id).unwrap();
+    let snap = wait_status(&engine, id, DownloadStatus::Completed, std::time::Duration::from_secs(180)).await;
+    let data = std::fs::read(snap.full_path).unwrap();
+    assert_eq!(sha256_hex(&data), sha256_hex(&gen_vec(size as u64)));
+}
+
+#[test]
+fn crash_recovery_resumes_from_sidecar() {
+    // dedicated server runtime that outlives both "processes"
+    let server_rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let addr = server_rt.block_on(async { spawn_server().await.0 });
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = test_cfg(dir.path());
+
+    let size = 8 * 1024 * 1024;
+    // single stream at ~0.5 MB/s: reaches 1 MB in ~2 s, would take ~16 s total —
+    // plenty of margin to kill the process mid-flight deterministically.
+    let url = format!("http://{addr}/slow/{size}/512");
+    let mut opts = DownloadOptions::default();
+    opts.connections = Some(1);
+
+    // "process 1": start download, make progress, then hard-kill the runtime
+    let id;
+    {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let engine = rt.block_on(async { Engine::new(cfg.clone()).unwrap() });
+        id = rt.block_on(async {
+            let id = engine.add(&url, opts).unwrap();
+            let start = std::time::Instant::now();
+            loop {
+                let s = engine.snapshot(id).unwrap();
+                if s.bytes_done > 1024 * 1024 {
+                    break;
+                }
+                assert!(
+                    s.status != DownloadStatus::Completed,
+                    "download completed too early to test crash recovery"
+                );
+                assert!(start.elapsed() < std::time::Duration::from_secs(30));
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            // ensure at least two sidecar persist ticks elapsed before the "crash"
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+            id
+        });
+        // hard drop = simulated power loss
+    }
+
+    // "process 2": new engine, same state dir -> auto-resume must finish the job
+    {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let engine = rt.block_on(async { Engine::new(cfg).unwrap() });
+        let snap = rt.block_on(async {
+            let waited = std::time::Instant::now();
+            loop {
+                let s = engine.snapshot(id).unwrap();
+                if matches!(
+                    s.status,
+                    DownloadStatus::Completed | DownloadStatus::Downloading | DownloadStatus::Connecting
+                ) {
+                    break;
+                }
+                assert!(waited.elapsed() < std::time::Duration::from_secs(15));
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            wait_status(&engine, id, DownloadStatus::Completed, std::time::Duration::from_secs(180)).await
+        });
+        let data = std::fs::read(snap.full_path).unwrap();
+        assert_eq!(data.len() as u64, size);
+        assert_eq!(sha256_hex(&data), sha256_hex(&gen_vec(size as u64)));
+    }
+}
 #[tokio::test]
 async fn redirects_followed_and_filename_from_content_disposition() {
     let (addr, _ctx) = spawn_server().await;
